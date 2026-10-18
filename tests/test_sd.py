@@ -42,8 +42,8 @@ def test_timeline_position_is_wall_clock_on_dst_days(monkeypatch):
     sd._cache.clear()
     clips = sd.recordings("20261025", force=True)["clips"]
     assert [c["day_second"] for c in clips] == [0, 12 * 3600]
-    assert clips[1]["time"] == "12:00:00" and clips[1]["type_label"] == "personne"
-    assert clips[0]["type_label"] == "mouvement"
+    assert clips[1]["time"] == "12:00:00" and clips[1]["type_label"] == "osoba"
+    assert clips[0]["type_label"] == "ruch"
 
 
 def test_listing_falls_back_only_when_method_is_refused(monkeypatch):

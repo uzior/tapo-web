@@ -1,5 +1,69 @@
 # tapo-web
 
+## Wersja lokalna: Windows i Tapo C520WS
+
+Fork projektu [freeKC/tapo-web](https://github.com/freeKC/tapo-web), rozwijany
+na kamerze **Tapo C520WS, firmware 1.3.5 Build 260522 Rel.14207n**.
+Zachowuje oryginalny podgląd, bibliotekę nagrań, kalendarz microSD i sterowanie PTZ.
+
+### Nowe funkcje
+
+- Natywne uruchamianie w Windows przez `Uruchom Tapo.bat`: serwer działa w tle,
+  a panel otwiera się w domyślnej przeglądarce. Kolejne uruchomienie korzysta
+  z istniejącego serwera.
+- Polski interfejs: ustawienia, kalendarz, komunikaty, typy zdarzeń i nazwy zwierząt.
+  Ta lokalna wersja używa języka polskiego; automatyczny wybór języka przeglądarki
+  został przygotowany osobno w PR do projektu źródłowego.
+- Protokół lokalny typu 3 przez pytapo (`TAPO_CONTROL_PROTOCOL=3`), obok
+  domyślnego typu 4. Obsługa przerw między próbami logowania i blokad kamery.
+- Poprawione sprawdzanie odpowiedzi logowania: błędy API zamiast `KeyError: dev_salt`.
+- Obsługa dźwięku nagrań SD w Windows oraz poprawka zastoju kolejek FFmpeg.
+  Obraz jest kopiowany bez ponownego kodowania.
+- Pomiar prędkości pobierania SD w **MB/s**, wygładzany z trzech ostatnich sekund,
+  i komunikat o braku nowych danych. Dostępny na liście nagrań i w odtwarzaczu.
+- Przycisk **Wyłącz serwer** w panelu: potwierdzenie, zakończenie nagrywania
+  i zatrzymanie procesów. Dostępny tylko z komputera uruchamiającego aplikację.
+
+### Uruchomienie w Windows
+
+Zainstaluj Python 3.12 i FFmpeg z ffprobe dostępnymi w PATH. W folderze projektu:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-windows.txt
+```
+
+Następnie kliknij `Uruchom Tapo.bat`. Panel: http://localhost:8088.
+Serwer domyślnie nasłuchuje tylko na 127.0.0.1.
+Zamknięcie przeglądarki pozostawia serwer w tle; zakończ go przyciskiem w panelu.
+
+Dane kamery wpisz w ustawieniach panelu. Konto kamery (RTSP/ONVIF) i hasło konta
+TP-Link (lokalne API i nagrania SD) to osobne dane. Dla sprawdzonej C520WS ustaw
+`TAPO_CONTROL_PROTOCOL=3` w lokalnym `.env` i włącz zgodność z aplikacjami
+zewnętrznymi w aplikacji Tapo. Uruchom serwer ponownie po zmianie protokołu.
+**Tapo Care nie jest wymagane do nagrań lokalnych na microSD.**
+
+Hasła w `.env`, nagrania, segmenty HLS, środowiska Python i logi są pomijane
+przez Git. W Windows dostęp do `.env` zależy od uprawnień folderu (ACL).
+Opcjonalny moduł rozpoznawania zwierząt wymaga osobnej instalacji; jego natywna
+instalacja w Windows nie jest częścią tego rozszerzenia.
+
+Potwierdzono na C520WS: połączenie, płynny podgląd, kalendarz, listę i pobieranie
+nagrań SD z obrazem i dźwiękiem. Testy lokalne: `python -m pytest tests -q`.
+Szczegóły konfiguracji: [README.local.md](README.local.md).
+
+### Poprawki zgłoszone do projektu źródłowego
+
+- [#1: obsługa błędów PAKE / dev_salt](https://github.com/freeKC/tapo-web/pull/1)
+- [#2: protokół typu 3](https://github.com/freeKC/tapo-web/pull/2)
+- [#3: Windows i FFmpeg](https://github.com/freeKC/tapo-web/pull/3)
+- [#4: język według preferencji przeglądarki](https://github.com/freeKC/tapo-web/pull/4)
+
+Poniżej zachowana dokumentacja oryginalnego projektu. Jej instrukcje Linux/WSL
+i francuski interfejs odnoszą się do wersji źródłowej.
+
+---
+
 [Version française](README.fr.md)
 
 A small self-hosted web app for a TP-Link Tapo camera. Live view, a browser for the videos

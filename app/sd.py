@@ -23,13 +23,16 @@ import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import camera, config
+from .control import create_control
 from .tapo_media import (BUSY_CODES, PLAYER_ID, ClipDemuxer, MediaError, MediaSession,
                          fetch_snapshot, stream_clip)
 from .tapo_v4 import TapoV4, TapoV4Error
@@ -46,10 +49,10 @@ _DATE_RE = re.compile(r"^\d{8}$")
 MAX_CLIP_SECONDS = 4 * 3600
 HLS_KEEP_SECONDS = 600          # keep a finished clip's HLS around this long after last access
 # PlayBackEventType of the official app ("video_type"/"vedio_type" of a recording)
-VIDEO_TYPES = {1: "continu", 2: "mouvement", 3: "sabotage", 4: "franchissement de ligne",
-               5: "intrusion de zone", 6: "personne", 7: "pleurs de bébé", 8: "véhicule",
-               9: "animal", 10: "sonnette", 11: "aboiement", 12: "miaulement", 13: "bris de verre",
-               14: "alarme fumée", 33: "animal"}
+VIDEO_TYPES = {1: "ciągłe", 2: "ruch", 3: "sabotaż", 4: "przekroczenie linii",
+               5: "wtargnięcie do strefy", 6: "osoba", 7: "płacz dziecka", 8: "pojazd",
+               9: "zwierzę", 10: "dzwonek", 11: "szczekanie", 12: "miauczenie", 13: "tłuczenie szkła",
+               14: "alarm dymowy", 33: "zwierzę"}
 _media_lock = threading.Lock()   # one media session at a time, clips and thumbnails alike
 _clip_waiting = threading.Event()  # a clip fetch wants _media_lock (threading.Lock is not FIFO:
                                    # without this the thumbnail worker re-takes it at once)
@@ -75,7 +78,7 @@ _user_id: int | None = None
 def _host() -> str:
     st = camera.locate()
     if not st.online or not st.host:
-        raise SdError("Caméra hors ligne.")
+        raise SdError("Brak połączenia z kamerą.")
     return st.host
 
 
@@ -83,10 +86,10 @@ def _api() -> TapoV4:
     global _client, _user_id
     host = _host()
     if not config.CLOUD_PASSWORD:
-        raise SdError("TAPO_CLOUD_PASSWORD manquant dans .env (mot de passe du compte TP-Link).")
+        raise SdError("Brak TAPO_CLOUD_PASSWORD w pliku .env (hasło konta TP-Link).")
     with _client_lock:
         if _client is None or _client.host != host:
-            _client = TapoV4(host, config.CLOUD_PASSWORD, username="admin")
+            _client = create_control(host, config.CLOUD_PASSWORD, username="admin")
             _user_id = None
         return _client
 
@@ -97,12 +100,12 @@ def _call(fn):
         return fn(_api())
     except TapoV4Error as e:
         if e.code in (-40404, -40408):
-            raise SdError("La caméra a temporairement bloqué les connexions (trop d'essais). "
-                          "Réessayez dans quelques minutes.") from e
-        raise SdError(f"API de contrôle : {e}", code=e.code) from e
+            raise SdError("Kamera tymczasowo zablokowała połączenia (zbyt wiele prób). "
+                          "Spróbuj ponownie za kilka minut.") from e
+        raise SdError(f"API sterowania: {e}", code=e.code) from e
     except OSError as e:          # requests' exceptions derive from OSError
         camera.invalidate()
-        raise SdError(f"Caméra injoignable : {e.__class__.__name__}") from e
+        raise SdError(f"Kamera jest niedostępna: {e.__class__.__name__}") from e
 
 
 def _uid() -> int:
@@ -163,11 +166,11 @@ def status(force: bool = False) -> dict:
     except SdError as e:
         return {"available": False, "reason": str(e)}
     if not card:
-        return {"available": False, "reason": "Aucune carte SD détectée par la caméra."}
+        return {"available": False, "reason": "Kamera nie wykryła karty SD."}
     ok = card.get("status") == "normal"
     return {
         "available": ok,
-        "reason": None if ok else f"État de la carte : {card.get('status')}",
+        "reason": None if ok else f"Stan karty: {card.get('status')}",
         "card": {
             "status": card.get("status"),
             "total": _size_bytes(card.get("video_total_space_accurate")),
@@ -210,11 +213,11 @@ def _list_day(date: str) -> list[dict]:
 
 def recordings(date: str, force: bool = False) -> dict:
     if not _DATE_RE.match(date or ""):
-        raise SdError("Date invalide (attendu : AAAAMMJJ).")
+        raise SdError("Nieprawidłowa data (wymagany format: RRRRMMDD).")
     try:
         day_start, _ = _day_bounds(date)
     except ValueError:
-        raise SdError("Date invalide (attendu : AAAAMMJJ).")
+        raise SdError("Nieprawidłowa data (wymagany format: RRRRMMDD).")
     raw = _cached(f"rec:{date}", 20.0, lambda: _list_day(date), force)
     clips = []
     for r in raw:
@@ -249,10 +252,10 @@ def recordings(date: str, force: bool = False) -> dict:
 def parse_id(clip_id: str) -> tuple[int, int]:
     m = _ID_RE.match(clip_id or "")
     if not m:
-        raise SdError("Identifiant de clip invalide.")
+        raise SdError("Nieprawidłowy identyfikator nagrania.")
     start, end = int(m.group(1)), int(m.group(2))
     if not 0 < end - start <= MAX_CLIP_SECONDS:
-        raise SdError("Durée de clip invalide.")
+        raise SdError("Nieprawidłowy czas trwania nagrania.")
     return start, end
 
 
@@ -374,6 +377,35 @@ def cache_usage() -> dict:
 # --------------------------------------------------------------------------- #
 #  Fetch jobs
 # --------------------------------------------------------------------------- #
+class _AudioSocket:
+    """A local audio pipe for Windows, where pass_fds is unavailable.
+
+    Accept in the pump thread: ffmpeg probes video before opening audio.
+    """
+
+    def __init__(self):
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.listener.settimeout(30)
+        self.url = f"tcp://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.connection = None
+
+    def write(self, chunk):
+        if not chunk:
+            return
+        if self.connection is None:
+            self.connection, _ = self.listener.accept()
+            self.connection.settimeout(30)
+            self.listener.close()
+        self.connection.sendall(chunk)
+
+    def close(self):
+        self.listener.close()
+        if self.connection is not None:
+            self.connection.close()
+
+
 class _Pump(threading.Thread):
     """Drains a queue into a pipe so the network reader never blocks on ffmpeg."""
 
@@ -400,7 +432,7 @@ class _Pump(threading.Thread):
             pass
 
 
-CORRUPT_MESSAGE = "enregistrement corrompu sur la carte SD (vidéo illisible)"
+CORRUPT_MESSAGE = "Uszkodzone nagranie na karcie SD (nie można odczytać obrazu)"
 
 
 def mp4_is_playable(path: Path) -> bool:
@@ -444,12 +476,24 @@ class _Mux:
 
     def start(self, has_audio: bool, audio_offset: float):
         job = self.job
-        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "mpegts", "-i", "pipe:0"]
+        # Bound probing on both inputs. With separate video/audio queues FFmpeg
+        # can otherwise wait for more video while the producer is blocked on
+        # a full audio queue, before FFmpeg has even opened the audio input.
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y",
+               "-analyzeduration", "1000000", "-probesize", "262144",
+               "-f", "mpegts", "-i", "pipe:0"]
         a_r = a_w = None
+        audio_socket = None
         if has_audio:
-            a_r, a_w = os.pipe()
+            if os.name == "nt":
+                audio_socket = _AudioSocket()
+                audio_input = audio_socket.url
+            else:
+                a_r, a_w = os.pipe()
+                audio_input = f"pipe:{a_r}"
             cmd += ["-itsoffset", f"{audio_offset:.3f}",
-                    "-f", "alaw", "-ar", "8000", "-ac", "1", "-i", f"pipe:{a_r}"]
+                    "-analyzeduration", "0", "-probesize", "32",
+                    "-f", "alaw", "-ar", "8000", "-ac", "1", "-i", audio_input]
         maps = ["-map", "0:v:0"] + (["-map", "1:a:0"] if has_audio else [])
         codecs = ["-c:v", "copy"] + (["-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "48k"]
                                      if has_audio else [])
@@ -461,16 +505,21 @@ class _Mux:
         try:
             with open(self.log, "wb") as log:     # a file, not a PIPE nobody drains
                 self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                             stderr=log, pass_fds=(a_r,) if has_audio else ())
+                                             stderr=log, pass_fds=(a_r,) if a_r is not None else ())
         except OSError as e:
+            if audio_socket is not None:
+                audio_socket.close()
             for fd in (a_r, a_w):
                 if fd is not None:
                     os.close(fd)
-            raise SdError(f"Impossible de lancer ffmpeg : {e}") from e
+            raise SdError(f"Nie można uruchomić FFmpeg: {e}") from e
         feeds = [("v", self.proc.stdin)]
         if has_audio:
-            os.close(a_r)                         # ffmpeg holds its own copy
-            feeds.append(("a", os.fdopen(a_w, "wb", buffering=0)))
+            if audio_socket is not None:
+                feeds.append(("a", audio_socket))
+            else:
+                os.close(a_r)                     # ffmpeg holds its own copy
+                feeds.append(("a", os.fdopen(a_w, "wb", buffering=0)))
         for kind, f in feeds:
             pump = _Pump(f)
             pump.q.put(bytes(self._pre[kind]))
@@ -483,7 +532,7 @@ class _Mux:
 
     def check(self):
         if self.proc is not None and self.proc.poll() is not None:
-            raise SdError("ffmpeg s'est arrêté : " + self._err())
+            raise SdError("FFmpeg zakończył działanie: " + self._err())
 
     def finish(self):
         for p in self.pumps:
@@ -491,9 +540,9 @@ class _Mux:
         try:
             self.proc.wait(timeout=120)
         except subprocess.TimeoutExpired:
-            raise SdError("ffmpeg ne termine pas la finalisation.")
+            raise SdError("FFmpeg nie zakończył zapisywania pliku.")
         if self.proc.returncode != 0 or not self.part.is_file() or self.part.stat().st_size < 1024:
-            raise SdError("Conversion MP4 échouée : " + self._err())
+            raise SdError("Konwersja MP4 nie powiodła się: " + self._err())
         if not mp4_is_playable(self.part):
             # ffmpeg happily copies garbage: some recordings are damaged on the card itself
             raise SdError(CORRUPT_MESSAGE)
@@ -514,9 +563,9 @@ class _Mux:
 
     def _err(self) -> str:
         try:
-            return self.log.read_bytes().decode("utf-8", "replace").strip()[-300:] or "sans message"
+            return self.log.read_bytes().decode("utf-8", "replace").strip()[-300:] or "brak szczegółów"
         except OSError:
-            return "sans message"
+            return "brak szczegółów"
 
 
 _KIND_RANK = {"play": 0, "download": 1, "analyze": 2}
@@ -532,10 +581,52 @@ class Job:
         self.total = float(self.end - self.start)
         self.error: str | None = None
         self.cancel = threading.Event()
+        self.cleaned_up = threading.Event()
         self.created = time.time()
         self.finished_at: float | None = None
         self.last_access = time.time()
         self.hls_dir = SD_HLS / clip_id
+        self._transfer_lock = threading.Lock()
+        self._transfer_samples = deque()
+        self._received_bytes = 0
+        self._last_data_at = None
+
+    def start_transfer(self):
+        with self._transfer_lock:
+            now = time.monotonic()
+            self._transfer_samples = deque([(now, 0)])
+            self._received_bytes = 0
+            self._last_data_at = now
+
+    def received(self, size: int):
+        if size <= 0:
+            return
+        with self._transfer_lock:
+            now = time.monotonic()
+            self._received_bytes += size
+            self._last_data_at = now
+            self._transfer_samples.append((now, self._received_bytes))
+            self._prune_transfer(now)
+
+    def _prune_transfer(self, now):
+        # Retain the sample spanning the beginning of the three-second window.
+        while len(self._transfer_samples) > 1 and self._transfer_samples[1][0] <= now - 3:
+            self._transfer_samples.popleft()
+
+    def transfer_stats(self):
+        with self._transfer_lock:
+            now = time.monotonic()
+            self._prune_transfer(now)
+            idle = None if self._last_data_at is None else max(0, now - self._last_data_at)
+            speed = 0.0
+            if self.state == "streaming" and self._transfer_samples:
+                start, count = self._transfer_samples[0]
+                elapsed = now - start
+                if elapsed >= 0.25 and idle is not None and idle < 3:
+                    speed = (self._received_bytes - count) / elapsed
+            return {"received_bytes": self._received_bytes,
+                    "bytes_per_second": round(speed),
+                    "idle_seconds": round(idle, 1) if idle is not None and self.state == "streaming" else None}
 
     @property
     def kind(self) -> str:
@@ -557,6 +648,7 @@ class Job:
 
     def snapshot(self) -> dict:
         return {"id": self.id, "kind": self.kind, "state": self.state,
+                **self.transfer_stats(),
                 "progress": round(self.progress, 1), "total": self.total,
                 "error": self.error,
                 # a previous job's HLS dir may still be on disk until _run() wipes it
@@ -578,7 +670,7 @@ class Fetcher:
         """Queue (or join) the fetch of a clip. ``analyze`` is reserved to the
         background analyser (``internal=True``) and always yields to viewers."""
         if kind not in (_KIND_RANK if internal else ("play", "download")):
-            raise SdError("Type de tâche invalide.")
+            raise SdError("Nieprawidłowy typ zadania.")
         parse_id(clip_id)
         if local_file(clip_id):
             return {"id": clip_id, "kind": kind, "state": "done", "progress": 0, "total": 0,
@@ -635,9 +727,14 @@ class Fetcher:
 
     def stop_all(self):
         with self._wake:
+            current = self._current
             for job in self._jobs.values():
                 if job.active:
                     self._cancel_locked(job)
+        # Let the current media reader leave its socket timeout and close/kill
+        # its FFmpeg before the server process exits.
+        if current is not None:
+            current.cleaned_up.wait(timeout=30)
 
     def _cancel_locked(self, job: Job):
         job.cancel.set()
@@ -667,6 +764,7 @@ class Fetcher:
                     shutil.rmtree(job.hls_dir, ignore_errors=True)
                 with self._lock:
                     self._current = None
+                job.cleaned_up.set()
                 time.sleep(1.0)               # let the camera release the media session
 
     def _run(self, job: Job):
@@ -699,7 +797,7 @@ class Fetcher:
             if job.cancel.is_set():
                 return
             if demux.first_video_pts is None:
-                raise SdError("La caméra n'a envoyé aucune vidéo pour ce clip.")
+                raise SdError("Kamera nie przesłała obrazu dla tego nagrania.")
             if not mux.started:
                 start_mux()                   # clip shorter than the pre-roll window
             job.state = "finalizing"
@@ -724,9 +822,11 @@ class Fetcher:
             for attempt in range(4):
                 try:
                     with MediaSession(host, config.CLOUD_PASSWORD, timeout=20.0) as sess:
+                        job.start_transfer()
                         try:
                             stream_clip(sess, job.start, job.end, demux,
-                                        should_stop=job.cancel.is_set, on_data=on_data)
+                                        should_stop=job.cancel.is_set, on_data=on_data,
+                                        on_bytes=job.received)
                         finally:
                             sess.stop()
                     break
@@ -739,10 +839,10 @@ class Fetcher:
                     job.cancel.wait(4.0 * (attempt + 1))
         except (OSError, MediaError) as e:    # socket.timeout is an OSError
             if getattr(e, "code", None) in BUSY_CODES:
-                raise SdError("Caméra occupée (" + BUSY_CODES[e.code] + ") : une autre lecture ou un autre "
-                              "téléchargement est en cours (appli Tapo ouverte ?). Réessayez dans un instant.") from e
+                raise SdError("Kamera jest zajęta (" + BUSY_CODES[e.code] + "): trwa inne odtwarzanie lub "
+                              "pobieranie (czy aplikacja Tapo jest otwarta?). Spróbuj ponownie za chwilę.") from e
             if demux.video_seconds < job.total * 0.9:
-                raise SdError(f"Flux interrompu par la caméra ({e}).") from e
+                raise SdError(f"Strumień przerwany przez kamerę ({e}).") from e
             # else: we already have (almost) the whole clip -> keep it
         finally:
             _media_lock.release()

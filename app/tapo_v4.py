@@ -288,9 +288,11 @@ class TapoV4:
             "cipher_suites": [1],
             "passcode_type": "userpw",
         })
-        if "result" not in reg:
+        if reg.get("error_code") not in (0, None) or "result" not in reg:
             raise TapoV4Error(reg.get("error_code"), "pake_register failed")
         res = reg["result"]
+        if not isinstance(res, dict) or not {"dev_salt", "dev_random", "iterations", "dev_share"} <= res.keys():
+            raise TapoV4Error(None, "Nieprawidłowa odpowiedź protokołu logowania typu 4")
         dev_salt = base64.b64decode(res["dev_salt"])
         dev_random = res["dev_random"]
         iterations = int(res["iterations"])

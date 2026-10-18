@@ -42,17 +42,17 @@ WORKER_IDLE_EXIT = 300.0        # stop the ML process after this long without wo
 CLIP_TIMEOUT = 900.0            # one clip must never block the queue forever
 SCHEMA_VERSION = 1
 
-# model label -> (French label, emoji, group). Groups drive the UI filters.
+# model label -> (Polish label, emoji, group). Groups drive the UI filters.
 LABELS = {
-    "cat": ("chat", "🐱", "animal"), "fox": ("renard", "🦊", "animal"),
-    "mustelid": ("fouine / mustélidé", "🦦", "animal"), "marten": ("fouine", "🦦", "animal"),
-    "badger": ("blaireau", "🦡", "animal"), "hedgehog": ("hérisson", "🦔", "animal"),
-    "dog": ("chien", "🐕", "animal"), "bird": ("oiseau", "🐦", "animal"),
-    "squirrel": ("écureuil", "🐿️", "animal"), "roe_deer": ("chevreuil", "🦌", "animal"),
-    "deer": ("cervidé", "🦌", "animal"), "wild_boar": ("sanglier", "🐗", "animal"),
-    "lagomorph": ("lapin / lièvre", "🐇", "animal"), "rodent": ("rongeur", "🐀", "animal"),
-    "bat": ("chauve-souris", "🦇", "animal"), "animal": ("animal", "🐾", "animal"),
-    "person": ("personne", "🚶", "person"), "vehicle": ("véhicule", "🚗", "vehicle"),
+    "cat": ("kot", "🐱", "animal"), "fox": ("lis", "🦊", "animal"),
+    "mustelid": ("kuna / łasicowate", "🦦", "animal"), "marten": ("kuna", "🦦", "animal"),
+    "badger": ("borsuk", "🦡", "animal"), "hedgehog": ("jeż", "🦔", "animal"),
+    "dog": ("pies", "🐕", "animal"), "bird": ("ptak", "🐦", "animal"),
+    "squirrel": ("wiewiórka", "🐿️", "animal"), "roe_deer": ("sarna", "🦌", "animal"),
+    "deer": ("jeleniowate", "🦌", "animal"), "wild_boar": ("dzik", "🐗", "animal"),
+    "lagomorph": ("królik / zając", "🐇", "animal"), "rodent": ("gryzoń", "🐀", "animal"),
+    "bat": ("nietoperz", "🦇", "animal"), "animal": ("zwierzę", "🐾", "animal"),
+    "person": ("osoba", "🚶", "person"), "vehicle": ("pojazd", "🚗", "vehicle"),
 }
 
 
@@ -98,7 +98,7 @@ def reject(clip_id: str, label: str, undo: bool = False) -> None:
     """The user says this label is wrong for this clip (or takes that back)."""
     sd.parse_id(clip_id)
     if label not in LABELS:
-        raise sd.SdError("Étiquette inconnue.")
+        raise sd.SdError("Nieznana etykieta.")
     with _db_lock, _db() as con:
         if undo:
             con.execute("DELETE FROM rejected WHERE clip_id=? AND label=?", (clip_id, label))
@@ -183,14 +183,14 @@ class _Worker:
         while True:
             left = end - time.time()
             if left <= 0:
-                raise WorkerError("le moteur d'analyse ne répond plus")
+                raise WorkerError("Moduł analizy nie odpowiada")
             if self.proc.poll() is not None:
-                raise WorkerError(f"le moteur d'analyse s'est arrêté (code {self.proc.returncode})")
+                raise WorkerError(f"Moduł analizy zakończył działanie (kod {self.proc.returncode})")
             ready, _, _ = select.select([fd], [], [], min(left, 1.0))
             if ready:
                 line = fd.readline()
                 if not line:
-                    raise WorkerError("le moteur d'analyse s'est arrêté")
+                    raise WorkerError("Moduł analizy zakończył działanie")
                 try:
                     msg = json.loads(line)
                 except ValueError:
@@ -202,7 +202,7 @@ class _Worker:
         if self.proc is not None and self.proc.poll() is None:
             return
         if not self.installed():
-            raise WorkerError("environnement d'analyse non installé (lancer ./ml/setup.sh)")
+            raise WorkerError("Moduł rozpoznawania zwierząt nie jest zainstalowany")
         log = open(config.BASE_DIR / "logs" / "ml_worker.log", "ab") if (config.BASE_DIR / "logs").is_dir() \
             else subprocess.DEVNULL
         self.proc = subprocess.Popen([str(ML_PYTHON), "-u", str(ML_DIR / "worker.py")],
@@ -211,7 +211,7 @@ class _Worker:
         msg = self._readline(300.0)               # model loading can take a while
         if msg.get("type") != "ready":
             self.stop()
-            raise WorkerError(msg.get("error") or "démarrage du moteur d'analyse impossible")
+            raise WorkerError(msg.get("error") or "Nie można uruchomić modułu analizy")
         self.info = msg
 
     def analyze(self, clip_id: str, path: Path, frame_out: Path) -> dict:
@@ -222,10 +222,10 @@ class _Worker:
             self.proc.stdin.flush()
         except OSError as e:
             self.stop()
-            raise WorkerError(f"moteur d'analyse injoignable ({e})") from e
+            raise WorkerError(f"Moduł analizy jest niedostępny ({e})") from e
         msg = self._readline(CLIP_TIMEOUT)
         if msg.get("type") == "error":
-            raise WorkerError(msg.get("error") or "analyse échouée")
+            raise WorkerError(msg.get("error") or "Analiza nie powiodła się")
         return msg
 
     def stop(self):
@@ -337,9 +337,9 @@ class Analyzer:
                 return p, not (job and job.kinds - {"analyze"})
             job = sd.fetcher.get(clip_id)
             if job is None or job.state in ("error", "cancelled"):
-                raise sd.SdError((job and job.error) or "récupération du clip annulée")
+                raise sd.SdError((job and job.error) or "Anulowano pobieranie nagrania")
             time.sleep(1.0)
-        raise sd.SdError("récupération du clip trop longue")
+        raise sd.SdError("Przekroczono czas pobierania nagrania")
 
     def _analyze(self, clip_id: str, day: str):
         try:

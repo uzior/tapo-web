@@ -51,7 +51,7 @@ def _require_host() -> str:
     st = camera.locate()
     if not st.online or not st.host:
         raise HTTPException(status_code=503,
-                            detail="Caméra introuvable sur le LAN (hors ligne ou IP changée).")
+                            detail="Nie znaleziono kamery w sieci lokalnej (kamera jest niedostępna lub zmienił się jej adres IP).")
     return st.host
 
 
@@ -92,7 +92,19 @@ def setup_state(request: Request):
     st = config.configured()
     st["needs_setup"] = not (st["camera_account"] and st["cloud_password"])
     st["can_edit"] = _is_local(request) or st["needs_setup"]
+    st["can_shutdown"] = _is_local(request) and callable(getattr(app.state, "request_shutdown", None))
     return st
+
+
+@app.post("/api/server/shutdown")
+async def shutdown_server(request: Request):
+    if not _is_local(request) or request.headers.get("x-tapo-action") != "shutdown":
+        raise HTTPException(403, "Wyłączenie serwera jest dostępne tylko lokalnie z panelu Tapo.")
+    callback = getattr(app.state, "request_shutdown", None)
+    if not callable(callback):
+        raise HTTPException(503, "Uruchom serwer przez Uruchom Tapo.bat, aby włączyć tę funkcję.")
+    callback()
+    return {"stopping": True}
 
 
 @app.post("/api/setup")
@@ -101,10 +113,10 @@ async def setup_save(request: Request):
     not be able to re-point the app or overwrite the stored credentials."""
     st = config.configured()
     if not (_is_local(request) or not (st["camera_account"] and st["cloud_password"])):
-        raise HTTPException(403, "Modifiable uniquement depuis la machine qui héberge l'application.")
+        raise HTTPException(403, "Zmiany są dostępne tylko na komputerze, na którym działa aplikacja.")
     body = await request.json()
     if not isinstance(body, dict):
-        raise HTTPException(400, "requête invalide")
+        raise HTTPException(400, "Nieprawidłowe żądanie")
     config.save_credentials({k: v for k, v in body.items() if isinstance(v, str)})
     sd._client = None
     camera.invalidate()
@@ -118,7 +130,7 @@ async def setup_save(request: Request):
 def api_snapshot(stream: str = Query(config.DEFAULT_STREAM)):
     stream_path = config.STREAMS.get(stream)
     if not stream_path:
-        raise HTTPException(400, "flux inconnu")
+        raise HTTPException(400, "Nieznany strumień")
     host = _require_host()
     url = config.rtsp_url(host, stream_path)
     try:
@@ -130,10 +142,10 @@ def api_snapshot(stream: str = Query(config.DEFAULT_STREAM)):
         )
     except subprocess.SubprocessError:
         camera.invalidate()  # camera may have moved/dropped -> re-discover next time
-        raise HTTPException(502, "échec de la capture d'image")
+        raise HTTPException(502, "Nie udało się wykonać zdjęcia")
     if not out.stdout:
         camera.invalidate()
-        raise HTTPException(502, "pas d'image (caméra injoignable ou flux non prêt)")
+        raise HTTPException(502, "Brak obrazu (kamera jest niedostępna lub strumień nie jest gotowy)")
     return Response(content=out.stdout, media_type="image/jpeg")
 
 
@@ -143,15 +155,15 @@ def api_snapshot(stream: str = Query(config.DEFAULT_STREAM)):
 @app.get("/live/{stream}/index.m3u8")
 def live_playlist(stream: str):
     if stream not in config.STREAMS:
-        raise HTTPException(404, "flux inconnu")
+        raise HTTPException(404, "Nieznany strumień")
     host = _require_host()
     try:
         s = live_manager.ensure(stream, host)
     except (KeyError, RuntimeError) as e:
         camera.invalidate()  # ffmpeg couldn't open the stream -> camera may have moved
-        raise HTTPException(502, f"live indisponible: {e}")
+        raise HTTPException(502, f"Podgląd niedostępny: {e}")
     if not s.playlist.exists():
-        raise HTTPException(503, "flux en cours de démarrage, réessayez")
+        raise HTTPException(503, "Trwa uruchamianie strumienia. Spróbuj ponownie")
     return FileResponse(s.playlist, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-store"})
 
@@ -159,13 +171,13 @@ def live_playlist(stream: str):
 @app.get("/live/{stream}/{segment}")
 def live_segment(stream: str, segment: str):
     if stream not in config.STREAMS:
-        raise HTTPException(404, "flux inconnu")
+        raise HTTPException(404, "Nieznany strumień")
     if not segment.endswith(".ts") or "/" in segment or ".." in segment:
-        raise HTTPException(404, "segment invalide")
+        raise HTTPException(404, "Nieprawidłowy segment")
     live_manager.touch(stream)
     seg = config.HLS_DIR / stream / segment
     if not seg.is_file():
-        raise HTTPException(404, "segment expiré")
+        raise HTTPException(404, "Segment wygasł")
     return FileResponse(seg, media_type="video/mp2t",
                         headers={"Cache-Control": "no-store"})
 
@@ -173,7 +185,7 @@ def live_segment(stream: str, segment: str):
 @app.post("/api/live/{stream}/stop")
 def live_stop(stream: str):
     if stream not in config.STREAMS:
-        raise HTTPException(404, "flux inconnu")
+        raise HTTPException(404, "Nieznany strumień")
     try:
         live_manager._get(stream).stop()
     except KeyError:
@@ -187,7 +199,7 @@ def live_stop(stream: str):
 @app.post("/api/record/start")
 def record_start(stream: str = Query(config.DEFAULT_STREAM)):
     if stream not in config.STREAMS:
-        raise HTTPException(400, "flux inconnu")
+        raise HTTPException(400, "Nieznany strumień")
     host = _require_host()
     rec = recorder.start_manual(host, stream)
     return {"id": rec.id, "target": rec.target, "stream": rec.stream}
@@ -197,7 +209,7 @@ def record_start(stream: str = Query(config.DEFAULT_STREAM)):
 def record_stop(id: str = Query(...)):
     ok = recorder.stop(id)
     if not ok:
-        raise HTTPException(404, "enregistrement inconnu")
+        raise HTTPException(404, "Nieznane nagranie")
     return {"stopped": True, "id": id}
 
 
@@ -209,7 +221,7 @@ def record_status():
 @app.post("/api/continuous/start")
 def continuous_start(stream: str = Query(config.DEFAULT_STREAM)):
     if stream not in config.STREAMS:
-        raise HTTPException(400, "flux inconnu")
+        raise HTTPException(400, "Nieznany strumień")
     host = _require_host()
     rec = recorder.start_continuous(host, stream)
     return {"id": rec.id, "kind": rec.kind, "stream": rec.stream,
@@ -238,7 +250,7 @@ def recordings_list():
 def recording_thumb(name: str):
     thumb = library.thumbnail(name)
     if not thumb:
-        raise HTTPException(404, "vignette indisponible")
+        raise HTTPException(404, "Miniatura niedostępna")
     return FileResponse(thumb, media_type="image/jpeg",
                         headers={"Cache-Control": "max-age=3600"})
 
@@ -247,7 +259,7 @@ def recording_thumb(name: str):
 def recording_play(name: str):
     p = library.resolve(name)
     if not p:
-        raise HTTPException(404, "introuvable")
+        raise HTTPException(404, "Nie znaleziono")
     # Starlette FileResponse honours Range requests -> in-browser seeking.
     return FileResponse(p, media_type="video/mp4")
 
@@ -256,14 +268,14 @@ def recording_play(name: str):
 def recording_download(name: str):
     p = library.resolve(name)
     if not p:
-        raise HTTPException(404, "introuvable")
+        raise HTTPException(404, "Nie znaleziono")
     return FileResponse(p, media_type="video/mp4", filename=p.name)
 
 
 @app.delete("/api/recordings/{name}")
 def recording_delete(name: str):
     if not library.delete(name):
-        raise HTTPException(404, "introuvable")
+        raise HTTPException(404, "Nie znaleziono")
     return {"deleted": name}
 
 
@@ -274,7 +286,7 @@ def recording_delete(name: str):
 def api_ptz(direction: str = Query(...)):
     host = _require_host()
     if not ptz_move(host, direction):
-        raise HTTPException(400, "PTZ indisponible ou direction invalide")
+        raise HTTPException(400, "Sterowanie PTZ jest niedostępne lub kierunek jest nieprawidłowy")
     return {"moved": direction}
 
 
@@ -357,7 +369,7 @@ def sd_untag(clip_id: str, key: str = Query(...), undo: bool = Query(False)):
 def sd_animal_frame(clip_id: str):
     p = _sd(animals.frame_path, clip_id)
     if not p:
-        raise HTTPException(404, "pas d'image")
+        raise HTTPException(404, "Brak obrazu")
     return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 
@@ -390,7 +402,7 @@ def sd_cancel(clip_id: str):
 def _sd_file(clip_id: str):
     p = _sd(sd.local_file, clip_id)
     if not p:
-        raise HTTPException(404, "clip non téléchargé")
+        raise HTTPException(404, "Nagranie nie zostało pobrane")
     return p
 
 
@@ -409,7 +421,7 @@ def sd_download(clip_id: str):
 def sd_thumb(clip_id: str):
     thumb = _sd(sd.thumbnail, clip_id)
     if not thumb:                           # camera busy / offline: the browser retries later
-        raise HTTPException(503, "vignette pas encore disponible", headers={"Retry-After": "5"})
+        raise HTTPException(503, "Miniatura nie jest jeszcze dostępna", headers={"Retry-After": "5"})
     return FileResponse(thumb, media_type="image/jpeg",
                         headers={"Cache-Control": "max-age=3600"})
 
@@ -418,7 +430,7 @@ def sd_thumb(clip_id: str):
 def sd_delete_local(clip_id: str):
     """Deletes the LOCAL copy only; the SD card is never modified."""
     if not _sd(sd.delete_local, clip_id):
-        raise HTTPException(404, "aucune copie locale")
+        raise HTTPException(404, "Brak kopii lokalnej")
     return {"deleted": clip_id}
 
 
@@ -427,7 +439,7 @@ def sd_hls_playlist(clip_id: str):
     _sd(sd.parse_id, clip_id)
     job = sd.fetcher.get(clip_id)
     if job is None or not job.playlist.is_file():
-        raise HTTPException(404, "flux non prêt")
+        raise HTTPException(404, "Strumień nie jest gotowy")
     sd.fetcher.touch(clip_id)
     return FileResponse(job.playlist, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-store"})
@@ -437,11 +449,11 @@ def sd_hls_playlist(clip_id: str):
 def sd_hls_segment(clip_id: str, segment: str):
     _sd(sd.parse_id, clip_id)
     if not segment.endswith(".ts") or "/" in segment or ".." in segment:
-        raise HTTPException(404, "segment invalide")
+        raise HTTPException(404, "Nieprawidłowy segment")
     sd.fetcher.touch(clip_id)
     seg = sd.SD_HLS / clip_id / segment
     if not seg.is_file():
-        raise HTTPException(404, "segment introuvable")
+        raise HTTPException(404, "segment Nie znaleziono")
     return FileResponse(seg, media_type="video/mp2t")
 
 

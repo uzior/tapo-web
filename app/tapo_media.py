@@ -62,8 +62,8 @@ class MediaError(Exception):
 
 
 # The camera serves very few media sessions at once; these mean "busy, retry later".
-BUSY_CODES = {-52405: "trop de requêtes", -52407: "trop de clients", -52417: "session de lecture occupée",
-              -52435: "sessions de lecture saturées"}
+BUSY_CODES = {-52405: "zbyt wiele żądań", -52407: "zbyt wiele połączeń", -52417: "sesja odtwarzania jest zajęta",
+              -52435: "limit sesji odtwarzania został osiągnięty"}
 
 
 def _parse_headers(block: bytes) -> dict[str, str]:
@@ -113,14 +113,14 @@ class MediaSession:
                 return out
             chunk = self.sock.recv(65536)
             if not chunk:
-                raise MediaError("connexion média fermée par la caméra")
+                raise MediaError("Kamera zamknęła połączenie multimedialne")
             self._buf += chunk
 
     def _read_exact(self, n: int) -> bytes:
         while len(self._buf) < n:
             chunk = self.sock.recv(max(65536, n - len(self._buf)))
             if not chunk:
-                raise MediaError("connexion média fermée par la caméra")
+                raise MediaError("Kamera zamknęła połączenie multimedialne")
             self._buf += chunk
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
@@ -145,7 +145,7 @@ class MediaSession:
         try:
             status = int(status_line.split()[1])
         except (IndexError, ValueError) as e:
-            raise MediaError(f"réponse média invalide: {status_line[:60]!r}") from e
+            raise MediaError(f"Nieprawidłowa odpowiedź multimedialna: {status_line[:60]!r}") from e
         return status, _parse_headers(rest)
 
     # -- open: digest auth + key exchange ------------------------------------
@@ -154,7 +154,7 @@ class MediaSession:
         self._send_request_head(None)
         status, hdr = self._read_response_head()
         if status != 401 or "www-authenticate" not in hdr:
-            raise MediaError(f"défi d'authentification attendu, reçu HTTP {status}")
+            raise MediaError(f"Oczekiwano żądania uwierzytelnienia, otrzymano HTTP {status}")
         chal = _parse_kv(hdr["www-authenticate"].split(" ", 1)[1], ",")
         digest = hashlib.sha256 if chal.get("encrypt_type") == "3" else hashlib.md5
         hashed_pwd = digest(self.cloud_password.encode()).hexdigest().upper()
@@ -174,11 +174,11 @@ class MediaSession:
         self._send_request_head(auth)
         status, hdr = self._read_response_head()
         if status == 401:
-            raise MediaError("authentification média refusée (mot de passe cloud ?)")
+            raise MediaError("Odrzucono uwierzytelnienie multimediów (sprawdź hasło konta TP-Link)")
         if status != 200:
-            raise MediaError(f"port média: HTTP {status}")
+            raise MediaError(f"Port multimediów: HTTP {status}")
         if "key-exchange" not in hdr:
-            raise MediaError("en-tête Key-Exchange absent")
+            raise MediaError("Brak nagłówka Key-Exchange")
         for piece in hdr.get("content-type", "").split(";"):
             if piece.strip().startswith("boundary="):
                 self._boundary = piece.strip()[len("boundary="):].encode()
@@ -245,7 +245,7 @@ class MediaSession:
                 try:
                     data = unpad(cipher.decrypt(data), 16)
                 except ValueError as e:
-                    raise MediaError("déchiffrement média impossible (mot de passe cloud ?)") from e
+                    raise MediaError("Nie można odszyfrować multimediów (sprawdź hasło konta TP-Link)") from e
             sid, seq = hdr.get("x-session-id"), hdr.get("x-data-sequence")
             if sid is not None:
                 self.session_id = sid
@@ -389,7 +389,8 @@ def fetch_snapshot(sess: MediaSession, start: int) -> bytes | None:
 
 def stream_clip(sess: MediaSession, start: int, end: int, demux: ClipDemuxer, *,
                 should_stop: Callable[[], bool] = lambda: False,
-                on_data: Callable[[], None] | None = None, overrun: float = 5.0) -> bool:
+                on_data: Callable[[], None] | None = None, overrun: float = 5.0,
+                on_bytes: Callable[[int], None] | None = None) -> bool:
     """Pull the recording [start, end] through ``demux``. True = the camera
     signalled a clean end of clip; False = stopped by the caller/overrun guard."""
     limit = float(end - start) + overrun     # safety net: never roll into later recordings
@@ -398,6 +399,8 @@ def stream_clip(sess: MediaSession, start: int, end: int, demux: ClipDemuxer, *,
         if should_stop():
             return False
         if mimetype == "video/mp2t":
+            if on_bytes:
+                on_bytes(len(data))
             wall = _hdr.get("x-data-pts", "")
             demux.feed(data, int(wall) if wall.isdigit() else None)
             if on_data:
@@ -407,7 +410,7 @@ def stream_clip(sess: MediaSession, start: int, end: int, demux: ClipDemuxer, *,
         elif mimetype == "application/json":
             finished, code = _control(data)
             if code is not None:
-                raise MediaError(f"lecture refusée par la caméra (code {code})", code=code)
+                raise MediaError(f"Kamera odmówiła odtwarzania (kod {code})", code=code)
             if finished:
                 return True
     return False

@@ -20,7 +20,7 @@ def test_store_roundtrip_labels_and_day_summary():
     animals._store("1789688911-1789688977", "20260918", "done", "m", 3.0, [])
     day = animals.results_for_day("20260919")
     r = day["1789778447-1789778512"]
-    assert r["animal"] and r["detections"][0]["label"] == "fouine / mustélidé" and r["detections"][0]["group"] == "animal"
+    assert r["animal"] and r["detections"][0]["label"] == "kuna / łasicowate" and r["detections"][0]["group"] == "animal"
     assert not day["1789752472-1789752483"]["animal"]
     assert animals.days_with_animals() == {"20260919": {"analyzed": 2, "animals": 1},
                                            "20260918": {"analyzed": 1, "animals": 0}}
