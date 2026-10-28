@@ -93,10 +93,10 @@ def _shutdown_local(request: Request) -> bool:
 @app.post("/api/server/shutdown")
 async def shutdown_server(request: Request):
     if not _shutdown_local(request) or request.headers.get("x-tapo-action") != "shutdown":
-        raise HTTPException(403, "Wyłączenie serwera jest dostępne tylko lokalnie z panelu Tapo.")
+        raise HTTPException(403, "Arrêt disponible uniquement depuis cette machine.")
     callback = getattr(app.state, "request_shutdown", None)
     if not callable(callback):
-        raise HTTPException(503, "Uruchom serwer przez Uruchom Tapo.bat, aby włączyć tę funkcję.")
+        raise HTTPException(503, "Démarrez avec python -m app.server pour activer cette fonction.")
     callback()
     return {"stopping": True}
 
@@ -210,7 +210,7 @@ async def discovery_scan(request: Request):
     subnet = str(values.get("subnet") or registry().subnet or config.DEFAULT_SUBNET).strip().rstrip(".")
     if not re.fullmatch(r"\d{1,3}\.\d{1,3}\.\d{1,3}", subnet):
         raise HTTPException(400, "Sous-réseau invalide (attendu : 192.168.1).")
-    found = discovery.scan(subnet)
+    found = await run_in_threadpool(discovery.scan, subnet)   # seconds of probing: not on the loop
     cams = registry().list()
     for dev in found:
         dev["camera"] = next((c.id for c in cams if (dev.get("mac") and dev["mac"] == c.cfg.mac)

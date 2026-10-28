@@ -1366,7 +1366,7 @@ loadCameras().then((d) => {
 const statusTimer = setInterval(refreshStatus, 15000);
 
 $("#btn-shutdown").addEventListener("click", async () => {
-  if (!confirm(t("Arrêter le serveur ? Le direct et les téléchargements seront interrompus, les enregistrements seront finalisés. Relancez start.bat pour revenir."))) return;
+  if (!confirm(t("Arrêter le serveur ? Le direct et les téléchargements seront interrompus, les enregistrements seront finalisés. Relancez votre commande de démarrage pour revenir."))) return;
   const button = $("#btn-shutdown");
   button.disabled = true;
   try {
@@ -1380,6 +1380,6 @@ $("#btn-shutdown").addEventListener("click", async () => {
     stopLive();
     document.title = t("Tapo Web - arrêt du serveur");
     document.body.replaceChildren();
-    document.body.append(h("main", { text: t("Le serveur s'arrête. Vous pouvez fermer cet onglet. Pour revenir, lancez start.bat.") }));
+    document.body.append(h("main", { text: t("Le serveur s'arrête. Vous pouvez fermer cet onglet. Pour revenir, relancez votre commande de démarrage.") }));
   } catch (error) { button.disabled = false; toast(TapoI18n.message(error.message), "err"); }
 });

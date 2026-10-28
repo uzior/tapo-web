@@ -674,6 +674,7 @@ class Job:
                     "idle_seconds": round(idle, 1) if idle is not None and self.state == "streaming" else None}
 
 
+
     @property
     def kind(self) -> str:
         """"play" only when nobody else needs the file: such a job is pre-emptible

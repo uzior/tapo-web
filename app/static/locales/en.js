@@ -1,5 +1,11 @@
 TapoI18n.register("en", {
   "ui": {
+    "Le serveur s'arrête.": "The server is stopping.",
+    "Arrêter le serveur ? Le direct et les téléchargements seront interrompus, les enregistrements seront finalisés. Relancez votre commande de démarrage pour revenir.": "Stop the server? Live view and downloads will stop, recordings will be finalized. Use your launch command to return.",
+    "Tapo Web - arrêt du serveur": "Tapo Web - stopping server",
+    "Le serveur s'arrête. Vous pouvez fermer cet onglet. Pour revenir, relancez votre commande de démarrage.": "The server is stopping. You can close this tab. Use your launch command to return.",
+    "Arrêter le serveur local": "Stop the local server",
+    "⏻ Arrêter le serveur": "⏻ Stop server",
     "o": "B",
     "Ko": "KB",
     "Mo": "MB",
@@ -230,16 +236,13 @@ TapoI18n.register("en", {
     "Nom de cette position :": "Name of this position:",
     "Position mémorisée": "Position saved",
     "Oublier la position {{0}} ?": "Forget the {{0}} position?",
-    "Le serveur s'arrête.": "The server is stopping.",
     "Mo/s": "MB/s",
-    "Aucune donnée reçue depuis {{0}} s": "No new data for {{0}} s",
-    "Arrêter le serveur ? Le direct et les téléchargements seront interrompus, les enregistrements seront finalisés. Relancez start.bat pour revenir.": "Stop the server? Live view and downloads will stop, recordings will be finalized. Run start.bat to return.",
-    "Tapo Web - arrêt du serveur": "Tapo Web - stopping server",
-    "Le serveur s'arrête. Vous pouvez fermer cet onglet. Pour revenir, lancez start.bat.": "The server is stopping. You can close this tab. Run start.bat to return.",
-    "Arrêter le serveur local": "Stop the local server",
-    "⏻ Arrêter le serveur": "⏻ Stop server"
+    "Aucune donnée reçue depuis {{0}} s": "No new data for {{0}} s"
   },
   "messages": {
+    "Arrêt disponible uniquement depuis cette machine.": "Shutdown is available only from this machine.",
+    "Démarrez avec python -m app.server pour activer cette fonction.": "Start with python -m app.server to enable this feature.",
+
     "chat": "cat",
     "renard": "fox",
     "fouine / mustélidé": "marten / mustelid",
