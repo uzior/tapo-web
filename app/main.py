@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from . import animals, camera, checks, config, discovery, features, library, sd
 from .cameras import Camera, CameraError, registry
@@ -85,6 +86,21 @@ def _is_local(request: Request) -> bool:
     return bool(request.client) and request.client.host in _ADMINS
 
 
+def _shutdown_local(request: Request) -> bool:
+    return bool(request.client) and request.client.host in ("127.0.0.1", "::1", "localhost")
+
+
+@app.post("/api/server/shutdown")
+async def shutdown_server(request: Request):
+    if not _shutdown_local(request) or request.headers.get("x-tapo-action") != "shutdown":
+        raise HTTPException(403, "Wyłączenie serwera jest dostępne tylko lokalnie z panelu Tapo.")
+    callback = getattr(app.state, "request_shutdown", None)
+    if not callable(callback):
+        raise HTTPException(503, "Uruchom serwer przez Uruchom Tapo.bat, aby włączyć tę funkcję.")
+    callback()
+    return {"stopping": True}
+
+
 def _can_edit(request: Request) -> bool:
     """Only from this machine (or while nothing is configured yet): a LAN visitor
     must not be able to re-point the app or overwrite the stored credentials."""
@@ -109,7 +125,7 @@ async def _body(request: Request) -> dict:
 def _overview(request: Request) -> dict:
     reg = registry()
     return {"cameras": [c.public() for c in reg.list()], "needs_setup": reg.needs_setup(),
-            "can_edit": _can_edit(request), "subnet": reg.subnet or config.DEFAULT_SUBNET,
+            "can_edit": _can_edit(request), "can_shutdown": _shutdown_local(request) and callable(getattr(app.state, "request_shutdown", None)), "subnet": reg.subnet or config.DEFAULT_SUBNET,
             "has_cloud_password": bool(reg.cloud_password)}
 
 
@@ -441,9 +457,11 @@ async def camera_settings_set(request: Request, cam: Camera = Depends(current_ca
     if not isinstance(body, dict) or not body:
         raise HTTPException(400, "requête invalide")
     card = sd.card_for(cam)
-    for key, value in body.items():
-        _feature(features.write, card, key, value)
-    return _feature(features.read, card, True)
+    def apply_settings():
+        for key, value in body.items():
+            _feature(features.write, card, key, value)
+        return _feature(features.read, card, True)
+    return await run_in_threadpool(apply_settings)
 
 
 @cam_routes.post("/api/presets")
@@ -455,8 +473,8 @@ async def preset_save(request: Request, cam: Camera = Depends(current_camera)):
     if not isinstance(body, dict) or not isinstance(body.get("name"), str):
         raise HTTPException(400, "requête invalide")
     card = sd.card_for(cam)
-    _feature(features.save_preset, card, body["name"])
-    return _feature(features.read, card, True)
+    await run_in_threadpool(_feature, features.save_preset, card, body["name"])
+    return await run_in_threadpool(_feature, features.read, card, True)
 
 
 @cam_routes.post("/api/presets/{preset_id}/goto")

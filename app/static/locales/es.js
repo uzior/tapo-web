@@ -229,7 +229,15 @@ TapoI18n.register("es", {
     "+ Mémoriser la position": "+ Guardar la posición",
     "Nom de cette position :": "Nombre de esta posición:",
     "Position mémorisée": "Posición guardada",
-    "Oublier la position {{0}} ?": "¿Olvidar la posición {{0}}?"
+    "Oublier la position {{0}} ?": "¿Olvidar la posición {{0}}?",
+    "Le serveur s'arrête.": "El servidor se está deteniendo.",
+    "Mo/s": "MB/s",
+    "Aucune donnée reçue depuis {{0}} s": "Sin datos nuevos desde hace {{0}} s",
+    "Arrêter le serveur ? Le direct et les téléchargements seront interrompus, les enregistrements seront finalisés. Relancez start.bat pour revenir.": "¿Detener el servidor? Se detendrán el vídeo en directo y las descargas, y se finalizarán las grabaciones. Ejecute start.bat para volver.",
+    "Tapo Web - arrêt du serveur": "Tapo Web - deteniendo servidor",
+    "Le serveur s'arrête. Vous pouvez fermer cet onglet. Pour revenir, lancez start.bat.": "El servidor se está deteniendo. Puede cerrar esta pestaña. Ejecute start.bat para volver.",
+    "Arrêter le serveur local": "Detener el servidor local",
+    "⏻ Arrêter le serveur": "⏻ Detener servidor"
   },
   "messages": {
     "chat": "gato",

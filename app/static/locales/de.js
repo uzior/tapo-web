@@ -229,7 +229,15 @@ TapoI18n.register("de", {
     "+ Mémoriser la position": "+ Position speichern",
     "Nom de cette position :": "Name dieser Position:",
     "Position mémorisée": "Position gespeichert",
-    "Oublier la position {{0}} ?": "Position {{0}} vergessen?"
+    "Oublier la position {{0}} ?": "Position {{0}} vergessen?",
+    "Le serveur s'arrête.": "Der Server wird beendet.",
+    "Mo/s": "MB/s",
+    "Aucune donnée reçue depuis {{0}} s": "Seit {{0}} s keine neuen Daten",
+    "Arrêter le serveur ? Le direct et les téléchargements seront interrompus, les enregistrements seront finalisés. Relancez start.bat pour revenir.": "Server beenden? Livebild und Downloads werden gestoppt, Aufnahmen abgeschlossen. Zum Neustart start.bat ausführen.",
+    "Tapo Web - arrêt du serveur": "Tapo Web - Server wird beendet",
+    "Le serveur s'arrête. Vous pouvez fermer cet onglet. Pour revenir, lancez start.bat.": "Der Server wird beendet. Sie können diesen Tab schließen. Zum Neustart start.bat ausführen.",
+    "Arrêter le serveur local": "Lokalen Server beenden",
+    "⏻ Arrêter le serveur": "⏻ Server beenden"
   },
   "messages": {
     "chat": "Katze",

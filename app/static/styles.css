@@ -46,7 +46,7 @@ body {
   border-radius: 8px; padding: 6px 8px; font: inherit; font-size: .9rem; cursor: pointer;
 }
 .lang-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-@media (max-width: 560px) {
+@media (max-width: 900px) {
   .topbar { flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
   .camstatus { order: 5; flex-basis: 100%; margin-left: 0; }
 }

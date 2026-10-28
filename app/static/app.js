@@ -21,6 +21,7 @@ const state = {
 const P = () => (state.cam ? `/cams/${encodeURIComponent(state.cam)}` : "");
 
 async function api(path, opts) {
+  if (state.shuttingDown) throw new Error(t("Le serveur s'arrête."));
   const res = await fetch(path, opts);
   let body = null;
   const ct = res.headers.get("content-type") || "";
@@ -81,6 +82,7 @@ $$(".tab").forEach((tab) => {
 
 // ---------- status ----------
 async function refreshStatus() {
+  if (state.shuttingDown) return;
   const cam = state.cam;
   try {
     const s = await api(P() + "/api/status");
@@ -546,10 +548,15 @@ function retryThumb(img, id) {
 }
 
 function jobText(job) {
+  const speed = ((job.bytes_per_second || 0) / 1000000).toLocaleString(TapoI18n.locale, {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }) + " " + t("Mo/s");
+  const idle = job.idle_seconds >= 3
+    ? " · " + t`Aucune donnée reçue depuis ${Math.floor(job.idle_seconds)} s` : "";
   switch (job.state) {
     case "queued": return t("En file d'attente…");
     case "connecting": return t("Connexion à la caméra…");
-    case "streaming": return t`Récupération depuis la caméra… ${fmtDur(job.progress)} / ${fmtDur(job.total)}`;
+    case "streaming": return t`Récupération depuis la caméra… ${fmtDur(job.progress)} / ${fmtDur(job.total)}` + " · " + speed + idle;
     case "finalizing": return t("Finalisation du MP4…");
     default: return "";
   }
@@ -848,7 +855,7 @@ function setSdModalState(c, job) {
   if (busy) {
     $("#modal-fetch-fill").style.width = (job.total ? Math.min(100, 100 * job.progress / job.total) : 0) + "%";
     $("#modal-fetch-text").textContent = sd.player && sd.player.noHls
-      ? t("Lecture dès la fin de la récupération… ") + fmtDur(job.progress) + " / " + fmtDur(job.total) : jobText(job);
+      ? t("Lecture dès la fin de la récupération… ") + jobText(job) : jobText(job);
   }
 }
 
@@ -1089,6 +1096,7 @@ async function loadCameras() {
   const d = await api("/api/cameras");
   state.cams = d.cameras || [];
   state.setup = d;
+  $("#btn-shutdown").hidden = !d.can_shutdown;
   const ids = state.cams.map((c) => c.id);
   if (!ids.includes(state.cam)) state.cam = ids.includes(storedCam()) ? storedCam() : (ids[0] || null);
   renderCamPicker();
@@ -1355,4 +1363,23 @@ loadCameras().then((d) => {
   refreshStatus();
   syncRecordings();
 }).catch(() => refreshStatus());
-setInterval(refreshStatus, 15000);
+const statusTimer = setInterval(refreshStatus, 15000);
+
+$("#btn-shutdown").addEventListener("click", async () => {
+  if (!confirm(t("Arrêter le serveur ? Le direct et les téléchargements seront interrompus, les enregistrements seront finalisés. Relancez start.bat pour revenir."))) return;
+  const button = $("#btn-shutdown");
+  button.disabled = true;
+  try {
+    await api("/api/server/shutdown", { method: "POST", headers: { "X-Tapo-Action": "shutdown" } });
+    state.shuttingDown = true;
+    clearInterval(statusTimer);
+    clearInterval(sd.pollTimer);
+    clearInterval(sd.aniTimer);
+    stopWall();
+    closePlayer();
+    stopLive();
+    document.title = t("Tapo Web - arrêt du serveur");
+    document.body.replaceChildren();
+    document.body.append(h("main", { text: t("Le serveur s'arrête. Vous pouvez fermer cet onglet. Pour revenir, lancez start.bat.") }));
+  } catch (error) { button.disabled = false; toast(TapoI18n.message(error.message), "err"); }
+});

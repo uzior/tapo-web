@@ -27,6 +27,7 @@ import socket
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -625,10 +626,53 @@ class Job:
         self.total = float(self.end - self.start)
         self.error: str | None = None
         self.cancel = threading.Event()
+        self.cleaned_up = threading.Event()
         self.created = time.time()
         self.finished_at: float | None = None
         self.last_access = time.time()
         self.hls_dir = hls_root / clip_id
+        self._transfer_lock = threading.Lock()
+        self._transfer_samples = deque()
+        self._received_bytes = 0
+        self._last_data_at = None
+
+    def start_transfer(self):
+        with self._transfer_lock:
+            now = time.monotonic()
+            self._transfer_samples = deque([(now, 0)])
+            self._received_bytes = 0
+            self._last_data_at = now
+
+    def received(self, size: int):
+        if size <= 0:
+            return
+        with self._transfer_lock:
+            now = time.monotonic()
+            self._received_bytes += size
+            self._last_data_at = now
+            self._transfer_samples.append((now, self._received_bytes))
+            self._prune_transfer(now)
+
+    def _prune_transfer(self, now):
+        # Retain the sample spanning the beginning of the three-second window.
+        while len(self._transfer_samples) > 1 and self._transfer_samples[1][0] <= now - 3:
+            self._transfer_samples.popleft()
+
+    def transfer_stats(self):
+        with self._transfer_lock:
+            now = time.monotonic()
+            self._prune_transfer(now)
+            idle = None if self._last_data_at is None else max(0, now - self._last_data_at)
+            speed = 0.0
+            if self.state == "streaming" and self._transfer_samples:
+                start, count = self._transfer_samples[0]
+                elapsed = now - start
+                if elapsed >= 0.25 and idle is not None and idle < 3:
+                    speed = (self._received_bytes - count) / elapsed
+            return {"received_bytes": self._received_bytes,
+                    "bytes_per_second": round(speed),
+                    "idle_seconds": round(idle, 1) if idle is not None and self.state == "streaming" else None}
+
 
     @property
     def kind(self) -> str:
@@ -650,6 +694,7 @@ class Job:
 
     def snapshot(self) -> dict:
         return {"id": self.id, "kind": self.kind, "state": self.state,
+                **self.transfer_stats(),
                 "progress": round(self.progress, 1), "total": self.total,
                 "error": self.error,
                 # a previous job's HLS dir may still be on disk until _run() wipes it
@@ -731,9 +776,14 @@ class Fetcher:
 
     def stop_all(self):
         with self._wake:
+            current = self._current
             for job in self._jobs.values():
                 if job.active:
                     self._cancel_locked(job)
+        # Let the current media reader leave its socket timeout and close/kill
+        # its FFmpeg before the server process exits.
+        if current is not None:
+            current.cleaned_up.wait(timeout=30)
 
     def _cancel_locked(self, job: Job):
         job.cancel.set()
@@ -763,6 +813,7 @@ class Fetcher:
                     shutil.rmtree(job.hls_dir, ignore_errors=True)
                 with self._lock:
                     self._current = None
+                job.cleaned_up.set()
                 time.sleep(1.0)               # let the camera release the media session
 
     def _run(self, job: Job):
@@ -826,9 +877,11 @@ class Fetcher:
             for attempt in range(4):
                 try:
                     with MediaSession(host, card.cam.cloud_password, timeout=20.0) as sess:
+                        job.start_transfer()
                         try:
                             stream_clip(sess, job.start, job.end, demux,
-                                        should_stop=job.cancel.is_set, on_data=on_data)
+                                        should_stop=job.cancel.is_set, on_data=on_data,
+                                        on_bytes=job.received)
                         finally:
                             sess.stop()
                     break
